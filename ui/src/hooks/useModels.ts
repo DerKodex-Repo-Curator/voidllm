@@ -9,6 +9,8 @@ export interface DeploymentResponse {
   base_url: string
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   weight: number
   priority: number
   is_active: boolean
@@ -28,6 +30,8 @@ export interface ModelResponse {
   output_price_per_1m: number
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   timeout?: string
   is_active: boolean
   source: string
@@ -58,6 +62,8 @@ export interface CreateModelParams {
   output_price_per_1m?: number
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   timeout?: string
   aliases?: string[]
   strategy?: string
@@ -69,10 +75,12 @@ export interface CreateModelParams {
 export interface CreateDeploymentParams {
   name: string
   provider: string
-  base_url: string
+  base_url?: string
   api_key?: string
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   weight?: number
   priority?: number
 }
@@ -84,6 +92,8 @@ export interface UpdateDeploymentParams {
   api_key?: string
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   weight?: number
   priority?: number
 }
@@ -99,6 +109,8 @@ export interface UpdateModelParams {
   output_price_per_1m?: number
   azure_deployment?: string
   azure_api_version?: string
+  region?: string
+  bedrock_model_id?: string
   timeout?: string
   aliases?: string[]
   fallback_model_name?: string | null
