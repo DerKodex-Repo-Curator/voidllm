@@ -729,6 +729,38 @@ func TestHandle_PathRewriting(t *testing.T) {
 	}
 }
 
+func TestIsAllowedPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "chat completions allowed", path: "chat/completions", want: true},
+		{name: "completions allowed", path: "completions", want: true},
+		{name: "embeddings allowed", path: "embeddings", want: true},
+		{name: "models allowed", path: "models", want: true},
+		{name: "rerank allowed", path: "rerank", want: true},
+		{name: "score allowed", path: "score", want: true},
+		{name: "unknown path rejected", path: "bogus", want: false},
+		{name: "reranking rejected", path: "reranking", want: false},
+		{name: "scores rejected", path: "scores", want: false},
+		{name: "rerank subpath rejected", path: "rerank/foo", want: false},
+		{name: "capitalised Rerank rejected", path: "Rerank", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isAllowedPath(tc.path); got != tc.want {
+				t.Errorf("isAllowedPath(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Security: Authorization header handling (hot-path security tests)
 // ──────────────────────────────────────────────────────────────────────────────
