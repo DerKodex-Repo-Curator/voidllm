@@ -271,3 +271,81 @@ func TestIsStreamingResponse_BinaryAdapter(t *testing.T) {
 		t.Error("other adapters must not treat eventstream as streaming")
 	}
 }
+
+func TestBedrockAdapter_MapUpstreamError_RedactsValidationMessage(t *testing.T) {
+	t.Parallel()
+
+	a := &BedrockAdapter{}
+	body := `{"__type":"ValidationException","message":"bad arn:aws:bedrock:eu-central-1:123456789012:inference-profile/x for account 123456789012, ok"}`
+	_, msg := a.MapUpstreamError(400, http.Header{}, []byte(body))
+	if strings.Contains(msg, "arn:aws") || strings.Contains(msg, "123456789012") || !strings.Contains(msg, "<redacted>") {
+		t.Errorf("message not redacted: %q", msg)
+	}
+	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"account 210987654321"}`))
+	if msg != "account <redacted>" {
+		t.Errorf("bare account id: %q", msg)
+	}
+	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"ARN arn:aws-us-gov:iam::123456789012:role/r"}`))
+	if strings.Contains(msg, "gov") || strings.Contains(msg, "123456789012") {
+		t.Errorf("partition arn: %q", msg)
+	}
+	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"id 1234567890123 stays"}`))
+	if !strings.Contains(msg, "1234567890123") {
+		t.Errorf("13-digit number must not be redacted: %q", msg)
+	}
+}
+
+func TestBedrockAdapter_StreamLifecycleAborts(t *testing.T) {
+	t.Parallel()
+
+	const (
+		stop   = `data: {"messageStop":{"stopReason":"end_turn"}}`
+		meta   = `data: {"metadata":{"usage":{"inputTokens":1,"outputTokens":1}}}`
+		delta  = `data: {"contentBlockDelta":{"contentBlockIndex":0,"delta":{"text":"x"}}}`
+		start0 = `data: {"contentBlockStart":{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"a","name":"f"}}}}`
+		stop0  = `data: {"contentBlockStop":{"contentBlockIndex":0}}`
+	)
+	tests := []struct {
+		name  string
+		lines []string
+	}{
+		{"delta after messageStop", []string{stop, delta}},
+		{"messageStop delta metadata", []string{stop, delta, meta}},
+		{"start after messageStop", []string{stop, start0}},
+		{"delta after block stop", []string{delta, stop0, delta}},
+		{"start after block stop", []string{stop0, start0}},
+		{"missing index on delta", []string{`data: {"contentBlockDelta":{"delta":{"text":"x"}}}`}},
+		{"missing index on start", []string{`data: {"contentBlockStart":{"start":{"toolUse":{"toolUseId":"a","name":"f"}}}}`}},
+		{"missing index on stop", []string{`data: {"contentBlockStop":{}}`}},
+		{"duplicate messageStart", []string{`data: {"messageStart":{"role":"assistant"}}`, `data: {"messageStart":{"role":"assistant"}}`}},
+		{"negative usage", []string{`data: {"metadata":{"usage":{"inputTokens":-1}}}`}},
+		{"huge usage", []string{`data: {"metadata":{"usage":{"outputTokens":9223372036854775807}}}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &BedrockAdapter{}
+			var err error
+			for _, l := range tc.lines {
+				_, err = a.TransformStreamLine([]byte(l))
+				if err != nil {
+					break
+				}
+			}
+			if err != errStreamTransformAborted {
+				t.Errorf("err = %v, want errStreamTransformAborted", err)
+			}
+		})
+	}
+}
+
+func TestBedrockAdapter_TransformResponseRejectsBadUsage(t *testing.T) {
+	t.Parallel()
+
+	for _, usage := range []string{`{"inputTokens":-5}`, `{"cacheReadInputTokens":9223372036854775807}`} {
+		in := `{"output":{"message":{"content":[{"text":"x"}]}},"stopReason":"end_turn","usage":` + usage + `}`
+		if _, err := (&BedrockAdapter{}).TransformResponse([]byte(in)); err == nil {
+			t.Errorf("usage %s must be rejected", usage)
+		}
+	}
+}

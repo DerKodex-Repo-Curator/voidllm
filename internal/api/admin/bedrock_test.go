@@ -695,3 +695,30 @@ func TestTestConnection_Bedrock(t *testing.T) {
 		}
 	})
 }
+
+func TestUpdateModel_LoadBalancedBedrockRejectsNonChat(t *testing.T) {
+	t.Parallel()
+
+	e := newBedrockEnv(t)
+	strategy := "round-robin"
+	chat := "chat"
+	m, err := e.db.CreateModel(context.Background(), db.CreateModelParams{
+		Name: "lb", Provider: "openai", BaseURL: "https://api.openai.com/v1", Source: "api",
+		ModelType: &chat, Strategy: &strategy,
+	})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	status, out := e.call(t, "POST", deploymentURL(m.ID), map[string]any{
+		"name": "bedrock", "provider": "bedrock", "region": bedrockTestRegion,
+		"bedrock_model_id": bedrockTestModelID, "weight": 1,
+	})
+	if status != 201 {
+		t.Fatalf("create deployment: %d %v", status, out)
+	}
+
+	status, out = e.call(t, "PATCH", modelItemURL(m.ID), map[string]any{"type": "embedding"})
+	if status != 400 || !strings.Contains(errMessage(out), "bedrock supports only chat models") {
+		t.Errorf("status %d body %v, want 400 bedrock chat-only", status, out)
+	}
+}

@@ -890,6 +890,26 @@ func (h *Handler) UpdateModel(c fiber.Ctx) error {
 			}
 		}
 	}
+	// A load-balanced model keeps its endpoints on deployments; a bedrock
+	// deployment only supports chat, so a non-chat effective type is rejected.
+	if effectiveStrategy != "" {
+		effectiveType := existing.ModelType
+		if req.Type != nil {
+			effectiveType = *req.Type
+		}
+		if effectiveType != "" && effectiveType != "chat" {
+			deps, depsErr := h.DB.ListDeployments(ctx, modelID)
+			if depsErr != nil {
+				h.Log.ErrorContext(ctx, "update model: list deployments", slog.String("error", depsErr.Error()))
+				return apierror.InternalError(c, "failed to get model deployments")
+			}
+			for i := range deps {
+				if deps[i].Provider == provider.Bedrock {
+					return apierror.BadRequest(c, "bedrock supports only chat models")
+				}
+			}
+		}
+	}
 	if req.Timeout != nil && *req.Timeout != "" {
 		if _, err := time.ParseDuration(*req.Timeout); err != nil {
 			return apierror.BadRequest(c, "timeout must be a valid Go duration string (e.g. \"30s\", \"2m\")")

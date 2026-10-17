@@ -656,3 +656,14 @@ func FuzzEventStreamReader(f *testing.F) {
 		}
 	})
 }
+
+func TestParseEventStreamHeaders_DuplicateExceptionAndErrorCode(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{":exception-type", ":error-code"} {
+		h := append(esStringHeader(name, "A"), esStringHeader(name, "B")...)
+		if _, err := parseEventStreamHeaders(h); err == nil {
+			t.Errorf("duplicate %s must be rejected", name)
+		}
+	}
+}

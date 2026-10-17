@@ -182,7 +182,7 @@ func writeEventStreamException(w *bytes.Buffer, name string) {
 // :exception-type and :error-code are retained.
 func parseEventStreamHeaders(b []byte) (eventStreamHeaders, error) {
 	var h eventStreamHeaders
-	var seenMessageType, seenEventType bool
+	var seenMessageType, seenEventType, seenExceptionType, seenErrorCode bool
 
 	for len(b) > 0 {
 		nameLen := int(b[0])
@@ -270,8 +270,16 @@ func parseEventStreamHeaders(b []byte) (eventStreamHeaders, error) {
 			seenEventType = true
 			h.eventType = string(value)
 		case ":exception-type":
+			if seenExceptionType {
+				return eventStreamHeaders{}, errEventStreamMalformed
+			}
+			seenExceptionType = true
 			h.exceptionType = string(value)
 		case ":error-code":
+			if seenErrorCode {
+				return eventStreamHeaders{}, errEventStreamMalformed
+			}
+			seenErrorCode = true
 			h.errorCode = string(value)
 		}
 	}

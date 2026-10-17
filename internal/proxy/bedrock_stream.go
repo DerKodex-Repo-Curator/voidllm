@@ -15,7 +15,7 @@ type bedrockStreamEvent struct {
 	MessageStart      *bedrockMessageStartEvent      `json:"messageStart"`
 	ContentBlockStart *bedrockContentBlockStartEvent `json:"contentBlockStart"`
 	ContentBlockDelta *bedrockContentBlockDeltaEvent `json:"contentBlockDelta"`
-	ContentBlockStop  *struct{}                      `json:"contentBlockStop"`
+	ContentBlockStop  *bedrockContentBlockStopEvent  `json:"contentBlockStop"`
 	MessageStop       *bedrockMessageStopEvent       `json:"messageStop"`
 	Metadata          *bedrockMetadataEvent          `json:"metadata"`
 	Exception         *string                        `json:":exception"`
@@ -28,7 +28,7 @@ type bedrockMessageStartEvent struct {
 
 // bedrockContentBlockStartEvent is the contentBlockStart event payload.
 type bedrockContentBlockStartEvent struct {
-	Index int `json:"contentBlockIndex"`
+	Index *int `json:"contentBlockIndex"`
 	Start struct {
 		ToolUse *struct {
 			ToolUseID string `json:"toolUseId"`
@@ -37,9 +37,14 @@ type bedrockContentBlockStartEvent struct {
 	} `json:"start"`
 }
 
+// bedrockContentBlockStopEvent is the contentBlockStop event payload.
+type bedrockContentBlockStopEvent struct {
+	Index *int `json:"contentBlockIndex"`
+}
+
 // bedrockContentBlockDeltaEvent is the contentBlockDelta event payload.
 type bedrockContentBlockDeltaEvent struct {
-	Index int `json:"contentBlockIndex"`
+	Index *int `json:"contentBlockIndex"`
 	Delta struct {
 		Text    *string `json:"text"`
 		ToolUse *struct {
@@ -85,6 +90,10 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 		return nil, errStreamTransformAborted
 
 	case ev.MessageStart != nil:
+		if a.startSeen || a.stopSeen {
+			return nil, errStreamTransformAborted
+		}
+		a.startSeen = true
 		chunk := a.buildChunk(openAIChunkDelta{Role: "assistant"}, nil)
 		return singleLine(chunk), nil
 
@@ -93,6 +102,17 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 
 	case ev.ContentBlockDelta != nil:
 		return a.handleContentBlockDelta(ev.ContentBlockDelta)
+
+	case ev.ContentBlockStop != nil:
+		idx := ev.ContentBlockStop.Index
+		if idx == nil || *idx < 0 || a.stopSeen {
+			return nil, errStreamTransformAborted
+		}
+		if a.stoppedBlocks == nil {
+			a.stoppedBlocks = make(map[int]struct{})
+		}
+		a.stoppedBlocks[*idx] = struct{}{}
+		return nil, nil
 
 	case ev.MessageStop != nil:
 		if a.stopSeen {
@@ -108,6 +128,9 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 
 	case ev.Metadata != nil:
 		if a.metadataSeen {
+			return nil, errStreamTransformAborted
+		}
+		if !ev.Metadata.Usage.valid() {
 			return nil, errStreamTransformAborted
 		}
 		a.metadataSeen = true
@@ -130,14 +153,18 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 // handleContentBlockStart registers a tool-use block and emits the OpenAI
 // tool_calls header delta. Non-tool block starts are dropped.
 func (a *BedrockAdapter) handleContentBlockStart(ev *bedrockContentBlockStartEvent) ([][]byte, error) {
+	if ev.Index == nil || *ev.Index < 0 || a.stopSeen || a.blockStopped(*ev.Index) {
+		return nil, errStreamTransformAborted
+	}
+	index := *ev.Index
 	tu := ev.Start.ToolUse
 	if tu == nil {
 		return nil, nil
 	}
-	if ev.Index < 0 || a.toolCallCounter >= maxAnthropicToolBlocks {
+	if a.toolCallCounter >= maxAnthropicToolBlocks {
 		return nil, errStreamTransformAborted
 	}
-	if _, exists := a.blockToToolCall[ev.Index]; exists {
+	if _, exists := a.blockToToolCall[index]; exists {
 		return nil, errStreamTransformAborted
 	}
 	if !bedrockToolUseIDRe.MatchString(tu.ToolUseID) || !bedrockToolNameRe.MatchString(tu.Name) {
@@ -151,7 +178,7 @@ func (a *BedrockAdapter) handleContentBlockStart(ev *bedrockContentBlockStartEve
 		a.blockToToolCall = make(map[int]int)
 	}
 	idx := a.toolCallCounter
-	a.blockToToolCall[ev.Index] = idx
+	a.blockToToolCall[index] = idx
 	a.toolCallCounter++
 
 	tc := openAIToolCall{
@@ -169,6 +196,9 @@ func (a *BedrockAdapter) handleContentBlockStart(ev *bedrockContentBlockStartEve
 // handleContentBlockDelta emits a content chunk for text deltas and an
 // argument fragment for tool input deltas. Other delta kinds are dropped.
 func (a *BedrockAdapter) handleContentBlockDelta(ev *bedrockContentBlockDeltaEvent) ([][]byte, error) {
+	if ev.Index == nil || *ev.Index < 0 || a.stopSeen || a.blockStopped(*ev.Index) {
+		return nil, errStreamTransformAborted
+	}
 	switch {
 	case ev.Delta.Text != nil:
 		if *ev.Delta.Text == "" {
@@ -177,7 +207,7 @@ func (a *BedrockAdapter) handleContentBlockDelta(ev *bedrockContentBlockDeltaEve
 		return singleLine(a.buildChunk(openAIChunkDelta{Content: *ev.Delta.Text}, nil)), nil
 
 	case ev.Delta.ToolUse != nil:
-		idx, ok := a.blockToToolCall[ev.Index]
+		idx, ok := a.blockToToolCall[*ev.Index]
 		if !ok {
 			return nil, errStreamTransformAborted
 		}
@@ -190,6 +220,12 @@ func (a *BedrockAdapter) handleContentBlockDelta(ev *bedrockContentBlockDeltaEve
 	default:
 		return nil, nil
 	}
+}
+
+// blockStopped reports whether a contentBlockStop was seen for index.
+func (a *BedrockAdapter) blockStopped(index int) bool {
+	_, ok := a.stoppedBlocks[index]
+	return ok
 }
 
 // finishLines returns the closing lines of a stream: the optional usage-only

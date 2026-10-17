@@ -29,6 +29,10 @@ var (
 	// bedrockExceptionNameRe restricts exception names read from an upstream
 	// error response.
 	bedrockExceptionNameRe = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
+	// bedrockARNRe matches AWS ARNs embedded in upstream error text.
+	bedrockARNRe = regexp.MustCompile(`arn:aws[a-zA-Z-]*:[^\s"'<>]+`)
+	// bedrockAccountIDRe matches a standalone 12-digit AWS account id.
+	bedrockAccountIDRe = regexp.MustCompile(`\b[0-9]{12}\b`)
 )
 
 // BedrockAdapter translates between the OpenAI chat completion wire format and
@@ -45,8 +49,10 @@ type BedrockAdapter struct {
 	toolCallCounter int
 	blockToToolCall map[int]int
 
-	stopSeen     bool
-	metadataSeen bool
+	startSeen     bool
+	stoppedBlocks map[int]struct{}
+	stopSeen      bool
+	metadataSeen  bool
 
 	inputTokens      int
 	outputTokens     int
@@ -150,6 +156,27 @@ type bedrockToolChoice struct {
 // bedrockToolChoiceTool forces a specific tool.
 type bedrockToolChoiceTool struct {
 	Name string `json:"name"`
+}
+
+// maxBedrockTokenCount bounds every reported token count. Larger or negative
+// values mark the response as malformed and keep the sums free of overflow.
+const maxBedrockTokenCount = 1 << 28
+
+// valid reports whether every count is within 0..maxBedrockTokenCount.
+func (u bedrockUsage) valid() bool {
+	for _, n := range [...]int{u.InputTokens, u.OutputTokens, u.TotalTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens} {
+		if n < 0 || n > maxBedrockTokenCount {
+			return false
+		}
+	}
+	return true
+}
+
+// redactBedrockMessage replaces AWS ARNs and standalone 12-digit account ids
+// in an upstream message with a placeholder.
+func redactBedrockMessage(s string) string {
+	s = bedrockARNRe.ReplaceAllString(s, "<redacted>")
+	return bedrockAccountIDRe.ReplaceAllString(s, "<redacted>")
 }
 
 // bedrockUsage is the Converse token usage object. inputTokens counts only
@@ -620,6 +647,10 @@ func (a *BedrockAdapter) TransformResponse(body []byte) ([]byte, error) {
 		return nil, errors.New("bedrock transform response: malformed body")
 	}
 
+	if !br.Usage.valid() {
+		return nil, errors.New("bedrock transform response: malformed body")
+	}
+
 	var textParts []string
 	var toolCalls []openAIToolCall
 	for _, block := range br.Output.Message.Content {
@@ -722,7 +753,7 @@ func (a *BedrockAdapter) MapUpstreamError(statusCode int, header http.Header, bo
 
 	switch name {
 	case "ValidationException":
-		msg := truncateAtRune(upstreamMsg, maxBedrockErrorMessageBytes)
+		msg := truncateAtRune(redactBedrockMessage(upstreamMsg), maxBedrockErrorMessageBytes)
 		if msg == "" {
 			msg = "Bedrock rejected the request"
 		}
