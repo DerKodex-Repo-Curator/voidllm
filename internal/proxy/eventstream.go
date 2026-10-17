@@ -252,6 +252,16 @@ func parseEventStreamHeaders(b []byte) (eventStreamHeaders, error) {
 					return eventStreamHeaders{}, errEventStreamMalformed
 				}
 				seenEventType = true
+			case ":exception-type":
+				if seenExceptionType {
+					return eventStreamHeaders{}, errEventStreamMalformed
+				}
+				seenExceptionType = true
+			case ":error-code":
+				if seenErrorCode {
+					return eventStreamHeaders{}, errEventStreamMalformed
+				}
+				seenErrorCode = true
 			}
 			continue
 		}

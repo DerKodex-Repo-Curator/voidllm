@@ -21,6 +21,12 @@ type bedrockStreamEvent struct {
 	Exception         *string                        `json:":exception"`
 }
 
+// bedrockStreamMembers lists the event members the adapter recognizes.
+var bedrockStreamMembers = [...]string{
+	"messageStart", "contentBlockStart", "contentBlockDelta", "contentBlockStop",
+	"messageStop", "metadata", ":exception",
+}
+
 // bedrockMessageStartEvent is the messageStart event payload.
 type bedrockMessageStartEvent struct {
 	Role string `json:"role"`
@@ -85,6 +91,18 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 		return nil, errStreamTransformAborted
 	}
 
+	// A recognized member whose value is JSON null decodes to a nil pointer
+	// and would look absent; treat it as a protocol violation instead.
+	var members map[string]jsonx.RawMessage
+	if err := jsonx.Unmarshal(payload, &members); err != nil {
+		return nil, errStreamTransformAborted
+	}
+	for _, key := range bedrockStreamMembers {
+		if raw, present := members[key]; present && isJSONNull(raw) {
+			return nil, errStreamTransformAborted
+		}
+	}
+
 	switch {
 	case ev.Exception != nil:
 		return nil, errStreamTransformAborted
@@ -105,7 +123,7 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 
 	case ev.ContentBlockStop != nil:
 		idx := ev.ContentBlockStop.Index
-		if idx == nil || *idx < 0 || a.stopSeen {
+		if idx == nil || *idx < 0 || !a.startSeen || a.stopSeen || a.blockStopped(*idx) {
 			return nil, errStreamTransformAborted
 		}
 		if a.stoppedBlocks == nil {
@@ -144,8 +162,7 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 		return nil, nil
 
 	default:
-		// contentBlockStop, padding-only and unknown events carry nothing to
-		// forward.
+		// Padding-only and unknown events carry nothing to forward.
 		return nil, nil
 	}
 }
@@ -153,7 +170,7 @@ func (a *BedrockAdapter) TransformStreamLine(line []byte) ([][]byte, error) {
 // handleContentBlockStart registers a tool-use block and emits the OpenAI
 // tool_calls header delta. Non-tool block starts are dropped.
 func (a *BedrockAdapter) handleContentBlockStart(ev *bedrockContentBlockStartEvent) ([][]byte, error) {
-	if ev.Index == nil || *ev.Index < 0 || a.stopSeen || a.blockStopped(*ev.Index) {
+	if ev.Index == nil || *ev.Index < 0 || !a.startSeen || a.stopSeen || a.blockStopped(*ev.Index) {
 		return nil, errStreamTransformAborted
 	}
 	index := *ev.Index
@@ -196,7 +213,7 @@ func (a *BedrockAdapter) handleContentBlockStart(ev *bedrockContentBlockStartEve
 // handleContentBlockDelta emits a content chunk for text deltas and an
 // argument fragment for tool input deltas. Other delta kinds are dropped.
 func (a *BedrockAdapter) handleContentBlockDelta(ev *bedrockContentBlockDeltaEvent) ([][]byte, error) {
-	if ev.Index == nil || *ev.Index < 0 || a.stopSeen || a.blockStopped(*ev.Index) {
+	if ev.Index == nil || *ev.Index < 0 || !a.startSeen || a.stopSeen || a.blockStopped(*ev.Index) {
 		return nil, errStreamTransformAborted
 	}
 	switch {

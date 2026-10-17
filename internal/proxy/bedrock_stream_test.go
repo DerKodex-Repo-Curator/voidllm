@@ -341,7 +341,11 @@ func TestBedrockAdapter_StreamAbortMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a := &BedrockAdapter{}
-			if _, err := bsFeed(a, tc.setup...); err != nil {
+			setup := tc.setup
+			if len(setup) == 0 || setup[0] != bsStart {
+				setup = append([]string{bsStart}, setup...)
+			}
+			if _, err := bsFeed(a, setup...); err != nil {
 				t.Fatalf("setup: %v", err)
 			}
 			out, err := a.TransformStreamLine([]byte("data: " + tc.line))
@@ -357,6 +361,9 @@ func TestBedrockAdapter_StreamAbortMatrix(t *testing.T) {
 	t.Run("tool block cap", func(t *testing.T) {
 		t.Parallel()
 		a := &BedrockAdapter{}
+		if _, err := bsFeed(a, bsStart); err != nil {
+			t.Fatal(err)
+		}
 		for i := 0; i < maxAnthropicToolBlocks; i++ {
 			if _, err := a.TransformStreamLine([]byte("data: " + bsToolStart(i, fmt.Sprintf("t%d", i), "f"))); err != nil {
 				t.Fatalf("block %d rejected: %v", i, err)
@@ -392,7 +399,7 @@ func TestBedrockAdapter_StreamDroppedEvents(t *testing.T) {
 		`{"contentBlockDelta":{"contentBlockIndex":0,"delta":{}}}`,
 	}
 	for i, d := range drops {
-		a := &BedrockAdapter{}
+		a := &BedrockAdapter{startSeen: true}
 		out, err := a.TransformStreamLine([]byte("data: " + d))
 		if err != nil {
 			t.Errorf("drop %d: err = %v", i, err)
@@ -430,7 +437,7 @@ func TestBedrockAdapter_StreamTextEscaping(t *testing.T) {
 	t.Parallel()
 	a := &BedrockAdapter{}
 	text := "line1\nline2 \"q\" \\ <tag> ä  "
-	lines, err := bsFeed(a, bsText(0, text))
+	lines, err := bsFeed(a, bsStart, bsText(0, text))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +447,7 @@ func TestBedrockAdapter_StreamTextEscaping(t *testing.T) {
 		}
 	}
 	chunks := bsChunks(t, lines)
-	if len(chunks) != 1 || bsDelta(chunks[0])["content"] != text {
+	if len(chunks) != 2 || bsDelta(chunks[1])["content"] != text {
 		t.Errorf("round trip failed: %v", chunks)
 	}
 }
@@ -484,5 +491,34 @@ func TestBedrockAdapter_StreamIDFallback(t *testing.T) {
 	}
 	if c := bsChunks(t, lines); len(c) != 1 || c[0]["id"] == "" {
 		t.Errorf("chunk id missing: %v", c)
+	}
+}
+
+func TestBedrockAdapter_StreamLifecycleStrictness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		lines []string
+	}{
+		{"null messageStart", []string{`{"messageStart":null}`}},
+		{"null contentBlockDelta", []string{bsStart, `{"contentBlockDelta":null}`}},
+		{"null contentBlockStart", []string{bsStart, `{"contentBlockStart":null}`}},
+		{"null contentBlockStop", []string{bsStart, `{"contentBlockStop":null}`}},
+		{"null messageStop", []string{bsStart, `{"messageStop":null}`}},
+		{"null metadata", []string{bsStart, `{"metadata":null}`}},
+		{"null exception", []string{`{":exception":null}`}},
+		{"delta before messageStart", []string{bsText(0, "x")}},
+		{"start before messageStart", []string{bsToolStart(0, "a", "f")}},
+		{"stop before messageStart", []string{bsBlkStop}},
+		{"duplicate contentBlockStop", []string{bsStart, bsBlkStop, bsBlkStop}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := bsFeed(&BedrockAdapter{}, tc.lines...); err != errStreamTransformAborted {
+				t.Errorf("err = %v, want errStreamTransformAborted", err)
+			}
+		})
 	}
 }

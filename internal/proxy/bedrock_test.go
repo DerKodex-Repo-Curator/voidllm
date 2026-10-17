@@ -238,17 +238,6 @@ func TestBedrockAdapter_MapUpstreamError(t *testing.T) {
 		t.Errorf("got %q %q", code, msg)
 	}
 
-	code, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"com.amazon#ValidationException","message":"bad field"}`))
-	if code != "invalid_request" || msg != "bad field" {
-		t.Errorf("got %q %q", code, msg)
-	}
-
-	long := strings.Repeat("ä", 600)
-	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"`+long+`"}`))
-	if len(msg) > maxBedrockErrorMessageBytes || strings.ContainsRune(msg, '�') {
-		t.Errorf("message not truncated cleanly: len=%d", len(msg))
-	}
-
 	code, _ = a.MapUpstreamError(429, http.Header{}, []byte(`not json`))
 	if code != "rate_limit_exceeded" {
 		t.Errorf("429 fallback code = %q", code)
@@ -272,26 +261,19 @@ func TestIsStreamingResponse_BinaryAdapter(t *testing.T) {
 	}
 }
 
-func TestBedrockAdapter_MapUpstreamError_RedactsValidationMessage(t *testing.T) {
+func TestBedrockAdapter_MapUpstreamError_ValidationTextNeverForwarded(t *testing.T) {
 	t.Parallel()
 
 	a := &BedrockAdapter{}
-	body := `{"__type":"ValidationException","message":"bad arn:aws:bedrock:eu-central-1:123456789012:inference-profile/x for account 123456789012, ok"}`
-	_, msg := a.MapUpstreamError(400, http.Header{}, []byte(body))
-	if strings.Contains(msg, "arn:aws") || strings.Contains(msg, "123456789012") || !strings.Contains(msg, "<redacted>") {
-		t.Errorf("message not redacted: %q", msg)
+	const body = `{"__type":"ValidationException","message":"bad arn:aws:bedrock:eu-central-1:123456789012:inference-profile/x for account 123456789012: my secret prompt text"}`
+	code, msg := a.MapUpstreamError(400, http.Header{}, []byte(body))
+	if code != "invalid_request" || msg != "Bedrock rejected the request as invalid" {
+		t.Errorf("got %q %q", code, msg)
 	}
-	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"account 210987654321"}`))
-	if msg != "account <redacted>" {
-		t.Errorf("bare account id: %q", msg)
-	}
-	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"ARN arn:aws-us-gov:iam::123456789012:role/r"}`))
-	if strings.Contains(msg, "gov") || strings.Contains(msg, "123456789012") {
-		t.Errorf("partition arn: %q", msg)
-	}
-	_, msg = a.MapUpstreamError(400, http.Header{}, []byte(`{"__type":"ValidationException","message":"id 1234567890123 stays"}`))
-	if !strings.Contains(msg, "1234567890123") {
-		t.Errorf("13-digit number must not be redacted: %q", msg)
+	for _, leak := range []string{"arn:aws", "123456789012", "secret prompt"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("message leaks %q: %q", leak, msg)
+		}
 	}
 }
 

@@ -517,8 +517,8 @@ func TestBedrockHandler_ErrorMapping(t *testing.T) {
 		wantCode    string
 		wantMessage string // exact
 	}{
-		{"validation passes message", 400, "ValidationException", "The maximum tokens you requested exceeds the model limit", false, "invalid_request", "The maximum tokens you requested exceeds the model limit"},
-		{"validation on stream request", 400, "ValidationException", "bad input", true, "invalid_request", "bad input"},
+		{"validation passes message", 400, "ValidationException", "The maximum tokens you requested exceeds the model limit", false, "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation on stream request", 400, "ValidationException", "bad input", true, "invalid_request", "Bedrock rejected the request as invalid"},
 		{"access denied static", 403, "AccessDeniedException", "User: arn:aws:iam::" + acct + ":user/alice is not authorized", false, "permission_denied", "Bedrock API key is not authorized for this model"},
 		{"access denied on stream request", 403, "AccessDeniedException", "arn:aws:iam::" + acct + ":role/x", true, "permission_denied", "Bedrock API key is not authorized for this model"},
 		{"unrecognized client", 403, "UnrecognizedClientException", "token invalid " + acct, false, "invalid_api_key", "upstream rejected the Bedrock API key"},
@@ -563,7 +563,7 @@ func TestBedrockHandler_ErrorMapping(t *testing.T) {
 			if body.Error.Code != tc.wantCode || body.Error.Message != tc.wantMessage {
 				t.Errorf("error = %+v, want code %q message %q", body.Error, tc.wantCode, tc.wantMessage)
 			}
-			if tc.errType != "ValidationException" && strings.Contains(resp.Body, acct) {
+			if strings.Contains(resp.Body, acct) {
 				t.Errorf("response leaks account id: %s", resp.Body)
 			}
 			if strings.Contains(resp.Body, `"message":"{`) || strings.Contains(resp.Body, "Errortype") {

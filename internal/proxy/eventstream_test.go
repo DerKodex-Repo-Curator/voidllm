@@ -667,3 +667,14 @@ func TestParseEventStreamHeaders_DuplicateExceptionAndErrorCode(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEventStreamHeaders_WrongTypedFirstThenStringDuplicate(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{":exception-type", ":error-code"} {
+		h := append(esRawHeader(name, 4, []byte{0, 0, 0, 1}), esStringHeader(name, "B")...)
+		if _, err := parseEventStreamHeaders(h); err == nil {
+			t.Errorf("wrong-typed %s followed by a string duplicate must be rejected", name)
+		}
+	}
+}

@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/voidmind-io/voidllm/internal/jsonx"
 	"github.com/voidmind-io/voidllm/internal/provider"
@@ -16,10 +15,6 @@ import (
 
 // bedrockEventStreamContentType is the media type of a ConverseStream response.
 const bedrockEventStreamContentType = "application/vnd.amazon.eventstream"
-
-// maxBedrockErrorMessageBytes caps the upstream validation message that is
-// forwarded to the client.
-const maxBedrockErrorMessageBytes = 512
 
 var (
 	// bedrockToolNameRe is the charset Bedrock accepts for tool names.
@@ -29,10 +24,6 @@ var (
 	// bedrockExceptionNameRe restricts exception names read from an upstream
 	// error response.
 	bedrockExceptionNameRe = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
-	// bedrockARNRe matches AWS ARNs embedded in upstream error text.
-	bedrockARNRe = regexp.MustCompile(`arn:aws[a-zA-Z-]*:[^\s"'<>]+`)
-	// bedrockAccountIDRe matches a standalone 12-digit AWS account id.
-	bedrockAccountIDRe = regexp.MustCompile(`\b[0-9]{12}\b`)
 )
 
 // BedrockAdapter translates between the OpenAI chat completion wire format and
@@ -170,13 +161,6 @@ func (u bedrockUsage) valid() bool {
 		}
 	}
 	return true
-}
-
-// redactBedrockMessage replaces AWS ARNs and standalone 12-digit account ids
-// in an upstream message with a placeholder.
-func redactBedrockMessage(s string) string {
-	s = bedrockARNRe.ReplaceAllString(s, "<redacted>")
-	return bedrockAccountIDRe.ReplaceAllString(s, "<redacted>")
 }
 
 // bedrockUsage is the Converse token usage object. inputTokens counts only
@@ -744,20 +728,15 @@ func mapBedrockStopReason(reason string) string {
 }
 
 // MapUpstreamError maps a Bedrock error response to a client-facing code and
-// message. Only ValidationException forwards upstream text (truncated); every
-// other message is a fixed literal because Bedrock error texts can contain
-// account IDs or principal ARNs. The result is client-facing only and must
-// never be logged.
+// message. Every message is a fixed literal: upstream error text can contain
+// account IDs, principal ARNs or request content, so none of it is forwarded.
+// The result is client-facing only and must never be logged.
 func (a *BedrockAdapter) MapUpstreamError(statusCode int, header http.Header, body []byte) (string, string) {
-	name, upstreamMsg := bedrockErrorDetails(header, body)
+	name := bedrockExceptionName(header, body)
 
 	switch name {
 	case "ValidationException":
-		msg := truncateAtRune(redactBedrockMessage(upstreamMsg), maxBedrockErrorMessageBytes)
-		if msg == "" {
-			msg = "Bedrock rejected the request"
-		}
-		return "invalid_request", msg
+		return "invalid_request", "Bedrock rejected the request as invalid"
 	case "ExpiredTokenException":
 		return "expired_api_key", "Bedrock API key has expired"
 	case "UnrecognizedClientException", "InvalidSignatureException":
@@ -798,24 +777,23 @@ func (a *BedrockAdapter) MapUpstreamError(statusCode int, header http.Header, bo
 	}
 }
 
-// bedrockErrorDetails extracts the exception name and the upstream message
-// from an error response. The name comes from the X-Amzn-Errortype header
-// (text before the first ':'), else from the body's __type or code field
-// (text after the last '#'); a value that is not a plain identifier yields an
-// empty name.
-func bedrockErrorDetails(header http.Header, body []byte) (name, message string) {
+// bedrockExceptionName extracts the exception name from an error response.
+// It comes from the X-Amzn-Errortype header (text before the first ':'), else
+// from the body's __type or code field (text after the last '#'). A value that
+// is not a plain identifier yields an empty name.
+func bedrockExceptionName(header http.Header, body []byte) string {
 	if v := header.Get("X-Amzn-Errortype"); v != "" {
 		if i := strings.IndexByte(v, ':'); i >= 0 {
 			v = v[:i]
 		}
 		if bedrockExceptionNameRe.MatchString(v) {
-			name = v
+			return v
 		}
 	}
 
 	var doc map[string]jsonx.RawMessage
 	if err := jsonx.Unmarshal(body, &doc); err != nil {
-		return name, ""
+		return ""
 	}
 	str := func(key string) string {
 		raw, ok := doc[key]
@@ -828,34 +806,15 @@ func bedrockErrorDetails(header http.Header, body []byte) (name, message string)
 		}
 		return s
 	}
-
-	if name == "" {
-		v := str("__type")
-		if v == "" {
-			v = str("code")
-		}
-		if i := strings.LastIndexByte(v, '#'); i >= 0 {
-			v = v[i+1:]
-		}
-		if bedrockExceptionNameRe.MatchString(v) {
-			name = v
-		}
+	v := str("__type")
+	if v == "" {
+		v = str("code")
 	}
-	message = str("message")
-	if message == "" {
-		message = str("Message")
+	if i := strings.LastIndexByte(v, '#'); i >= 0 {
+		v = v[i+1:]
 	}
-	return name, message
-}
-
-// truncateAtRune shortens s to at most limit bytes without splitting a rune.
-func truncateAtRune(s string, limit int) string {
-	if len(s) <= limit {
-		return s
+	if bedrockExceptionNameRe.MatchString(v) {
+		return v
 	}
-	n := limit
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return strings.ToValidUTF8(s[:n], "")
+	return ""
 }

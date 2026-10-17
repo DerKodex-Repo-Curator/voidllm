@@ -475,13 +475,13 @@ func TestBedrockAdapter_MapUpstreamErrorMatrix(t *testing.T) {
 		wantCode string
 		wantMsg  string // exact; "" skips
 	}{
-		{"validation via header", 400, hdr("ValidationException"), []byte(`{"message":"max_tokens too big"}`), "invalid_request", "max_tokens too big"},
-		{"validation via header with url suffix", 400, hdr("ValidationException:http://internal.amazon.com/"), []byte(`{"message":"bad"}`), "invalid_request", "bad"},
-		{"validation via __type", 400, hdr(""), body("com.amazon.coral.validate#ValidationException", "nope"), "invalid_request", "nope"},
-		{"validation via code field", 400, hdr(""), []byte(`{"code":"ValidationException","message":"viacode"}`), "invalid_request", "viacode"},
-		{"validation capital Message", 400, hdr("ValidationException"), []byte(`{"Message":"capital"}`), "invalid_request", "capital"},
-		{"validation fallback message", 400, hdr("ValidationException"), []byte(`{}`), "invalid_request", "Bedrock rejected the request"},
-		{"validation non-json body", 400, hdr("ValidationException"), []byte(`<html>`), "invalid_request", "Bedrock rejected the request"},
+		{"validation via header", 400, hdr("ValidationException"), []byte(`{"message":"max_tokens too big"}`), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation via header with url suffix", 400, hdr("ValidationException:http://internal.amazon.com/"), []byte(`{"message":"bad"}`), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation via __type", 400, hdr(""), body("com.amazon.coral.validate#ValidationException", "nope"), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation via code field", 400, hdr(""), []byte(`{"code":"ValidationException","message":"viacode"}`), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation capital Message", 400, hdr("ValidationException"), []byte(`{"Message":"capital"}`), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation fallback message", 400, hdr("ValidationException"), []byte(`{}`), "invalid_request", "Bedrock rejected the request as invalid"},
+		{"validation non-json body", 400, hdr("ValidationException"), []byte(`<html>`), "invalid_request", "Bedrock rejected the request as invalid"},
 		{"header wins over body", 400, hdr("ThrottlingException"), body("ValidationException", "x"), "rate_limit_exceeded", "Bedrock rate limit exceeded"},
 		{"access denied hides account", 403, hdr("AccessDeniedException"), []byte(`{"message":"User: ` + secretAcct + ` is not authorized to perform bedrock:InvokeModel"}`), "permission_denied", "Bedrock API key is not authorized for this model"},
 		{"unrecognized client", 403, hdr("UnrecognizedClientException"), []byte(`{"message":"The security token included in the request is invalid ` + secretAcct + `"}`), "invalid_api_key", "upstream rejected the Bedrock API key"},
@@ -520,52 +520,10 @@ func TestBedrockAdapter_MapUpstreamErrorMatrix(t *testing.T) {
 			if tc.wantMsg != "" && msg != tc.wantMsg {
 				t.Errorf("message = %q, want %q", msg, tc.wantMsg)
 			}
-			if tc.wantCode != "invalid_request" || !strings.Contains(string(tc.body), "ValidationException") {
-				for _, leak := range []string{"123456789012", "alice", "slow down", "warming"} {
-					if strings.Contains(msg, leak) {
-						t.Errorf("message %q leaks %q", msg, leak)
-					}
+			for _, leak := range []string{"123456789012", "alice", "slow down", "warming", "max_tokens", "nope", "viacode", "capital"} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("message %q leaks %q", msg, leak)
 				}
-			}
-		})
-	}
-}
-
-func TestBedrockAdapter_MapUpstreamErrorTruncation(t *testing.T) {
-	t.Parallel()
-	h := http.Header{}
-	h.Set("X-Amzn-Errortype", "ValidationException")
-
-	tests := []struct {
-		name string
-		msg  string
-	}{
-		{"ascii 600", strings.Repeat("a", 600)},
-		{"exactly 512", strings.Repeat("a", 512)},
-		{"two byte runes", strings.Repeat("ä", 600)},
-		{"three byte runes", strings.Repeat("€", 600)},
-		{"four byte runes", strings.Repeat("😀", 600)},
-		{"short", "short"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			b, _ := json.Marshal(map[string]string{"message": tc.msg})
-			_, got := (&BedrockAdapter{}).MapUpstreamError(400, h, b)
-			if len(got) > maxBedrockErrorMessageBytes {
-				t.Errorf("len = %d, want <= %d", len(got), maxBedrockErrorMessageBytes)
-			}
-			if !strings.HasPrefix(tc.msg, got) {
-				t.Errorf("truncated message is not a prefix of the original")
-			}
-			if strings.ContainsRune(got, '�') {
-				t.Errorf("truncation split a rune: %q", got[len(got)-4:])
-			}
-			if len(tc.msg) <= maxBedrockErrorMessageBytes && got != tc.msg {
-				t.Errorf("message within limit must be unchanged")
-			}
-			if len(tc.msg) > maxBedrockErrorMessageBytes && len(got) < maxBedrockErrorMessageBytes-4 {
-				t.Errorf("over-truncated: len %d", len(got))
 			}
 		})
 	}
