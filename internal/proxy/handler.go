@@ -1865,8 +1865,10 @@ func (p *ProxyHandler) handleBufferedResponse(c fiber.Ctx, resp *http.Response, 
 	copyResponseHeaders(c, resp)
 
 	// Transform the body if an adapter is present and the response is
-	// successful. Error responses (4xx/5xx) are forwarded as-is so that
-	// provider-specific error details reach the client unchanged.
+	// successful. Error responses (4xx/5xx) are forwarded unchanged so that
+	// provider-specific error details reach the client, unless the adapter
+	// implements upstreamErrorMapper: then the body is replaced by the mapped
+	// apierror envelope and the status code stays unchanged.
 	//
 	// usageBody tracks which body to pass to extractUsage. Anthropic (and
 	// other non-OpenAI adapters) use provider-specific field names
