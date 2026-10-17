@@ -1008,3 +1008,52 @@ func TestBedrockHandler_NoContentInLogs(t *testing.T) {
 		}
 	}
 }
+
+func TestBedrockHandler_ErrorMapping_RealAWSShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		status      int
+		errType     string
+		body        string
+		wantCode    string
+		wantMessage string
+		leak        string
+	}{
+		{"invalid bearer key", 403, "AccessDeniedException:http://internal.amazon.com/coral/com.amazon.coral.service/", `{"Message":"Authentication failed: Please make sure your API Key is valid."}`, "invalid_api_key", "upstream rejected the Bedrock API key", "Authentication failed"},
+		{"no model access", 400, "ValidationException:http://internal.amazon.com/coral/com.amazon.bedrock/", `{"message":"Error 002: Access to Bedrock models is not allowed for this account"}`, "permission_denied", "Bedrock model access is not enabled for this AWS account", "Error 002"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			up := newBHUpstream(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Amzn-Errortype", tc.errType)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			env := newBHEnv(t, bhRegistry(t, up.URL))
+			resp := env.post(t, `{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)
+
+			if resp.Status != tc.status {
+				t.Errorf("status = %d, want %d", resp.Status, tc.status)
+			}
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(resp.Body), &body); err != nil {
+				t.Fatalf("body is not apierror JSON: %v\n%s", err, resp.Body)
+			}
+			if body.Error.Code != tc.wantCode || body.Error.Message != tc.wantMessage {
+				t.Errorf("error = %+v, want code %q message %q", body.Error, tc.wantCode, tc.wantMessage)
+			}
+			if strings.Contains(resp.Body, tc.leak) || strings.Contains(resp.Body, "amazon.com") {
+				t.Errorf("response leaks upstream text: %s", resp.Body)
+			}
+		})
+	}
+}

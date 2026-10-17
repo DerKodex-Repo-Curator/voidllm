@@ -736,12 +736,18 @@ func (a *BedrockAdapter) MapUpstreamError(statusCode int, header http.Header, bo
 
 	switch name {
 	case "ValidationException":
+		if strings.Contains(bedrockErrorMessage(body), "access to bedrock models is not allowed") {
+			return "permission_denied", "Bedrock model access is not enabled for this AWS account"
+		}
 		return "invalid_request", "Bedrock rejected the request as invalid"
 	case "ExpiredTokenException":
 		return "expired_api_key", "Bedrock API key has expired"
 	case "UnrecognizedClientException", "InvalidSignatureException":
 		return "invalid_api_key", "upstream rejected the Bedrock API key"
 	case "AccessDeniedException":
+		if strings.Contains(bedrockErrorMessage(body), "authentication failed") {
+			return "invalid_api_key", "upstream rejected the Bedrock API key"
+		}
 		return "permission_denied", "Bedrock API key is not authorized for this model"
 	case "ResourceNotFoundException":
 		return "model_not_found", "Bedrock model or inference profile not found"
@@ -775,6 +781,27 @@ func (a *BedrockAdapter) MapUpstreamError(statusCode int, header http.Header, bo
 	default:
 		return "upstream_error", "Bedrock returned an error"
 	}
+}
+
+// bedrockErrorMessage returns the lowercased upstream "message" (or "Message")
+// field of an error body, or "" when absent or not a string. The text is used
+// only to classify against fixed substrings and is never forwarded or logged.
+func bedrockErrorMessage(body []byte) string {
+	var doc map[string]jsonx.RawMessage
+	if err := jsonx.Unmarshal(body, &doc); err != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "Message"} {
+		raw, ok := doc[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if err := jsonx.Unmarshal(raw, &s); err == nil && s != "" {
+			return strings.ToLower(s)
+		}
+	}
+	return ""
 }
 
 // bedrockExceptionName extracts the exception name from an error response.

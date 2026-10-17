@@ -196,10 +196,12 @@ Bedrock error responses are mapped to the standard VoidLLM error shape. The HTTP
 
 | Bedrock exception | Error code | Message |
 |---|---|---|
-| `ValidationException` | `invalid_request` | Upstream message, truncated to 512 bytes |
+| `ValidationException` | `invalid_request` | Bedrock rejected the request as invalid |
 | `UnrecognizedClientException`, `InvalidSignatureException`, other 401 | `invalid_api_key` | upstream rejected the Bedrock API key |
 | `ExpiredTokenException` | `expired_api_key` | Bedrock API key has expired |
+| `AccessDeniedException` with an authentication failure (an invalid or unknown API key returns 403) | `invalid_api_key` | upstream rejected the Bedrock API key |
 | `AccessDeniedException`, other 403 | `permission_denied` | Bedrock API key is not authorized for this model |
+| `ValidationException` reporting that the account has no Bedrock model access | `permission_denied` | Bedrock model access is not enabled for this AWS account |
 | `ResourceNotFoundException` | `model_not_found` | Bedrock model or inference profile not found |
 | `ThrottlingException`, other 429 | `rate_limit_exceeded` | Bedrock rate limit exceeded |
 | `ServiceQuotaExceededException` | `quota_exceeded` | Bedrock service quota exceeded |
@@ -210,7 +212,7 @@ Bedrock error responses are mapped to the standard VoidLLM error shape. The HTTP
 | `ServiceUnavailableException` | `upstream_unavailable` | Bedrock service unavailable |
 | Anything else | by status: 400 `invalid_request`, 404 `not_found`, otherwise `upstream_error` | Fixed message |
 
-Only the validation message is forwarded from Bedrock. All other messages are fixed text, because Bedrock access errors can contain account IDs and principal ARNs.
+No Bedrock message text is forwarded, logged, or embedded in the response. The upstream message is only checked against fixed phrases to tell the cases above apart, and every client-facing message is fixed text, because Bedrock errors can contain account IDs and principal ARNs.
 
 ### Health checks
 

@@ -495,6 +495,10 @@ func TestBedrockAdapter_MapUpstreamErrorMatrix(t *testing.T) {
 		{"model error", 424, hdr("ModelErrorException"), []byte(`{"message":"e"}`), "upstream_model_error", "Bedrock model returned an error"},
 		{"internal server", 500, hdr("InternalServerException"), []byte(`{"message":"i"}`), "upstream_error", "Bedrock internal error"},
 		{"service unavailable", 503, hdr("ServiceUnavailableException"), []byte(`{"message":"s"}`), "upstream_unavailable", "Bedrock service unavailable"},
+		{"real invalid bearer key", 403, hdr("AccessDeniedException:http://internal.amazon.com/coral/com.amazon.coral.service/"), []byte(`{"Message":"Authentication failed: Please make sure your API Key is valid."}`), "invalid_api_key", "upstream rejected the Bedrock API key"},
+		{"real no model access", 400, hdr("ValidationException:http://internal.amazon.com/coral/com.amazon.bedrock/"), []byte(`{"message":"Error 002: Access to Bedrock models is not allowed for this account"}`), "permission_denied", "Bedrock model access is not enabled for this AWS account"},
+		{"access denied other message stays permission", 403, hdr("AccessDeniedException"), []byte(`{"Message":"other"}`), "permission_denied", "Bedrock API key is not authorized for this model"},
+		{"validation substring under wrong type ignored", 403, hdr("AccessDeniedException"), []byte(`{"message":"Access to Bedrock models is not allowed"}`), "permission_denied", "Bedrock API key is not authorized for this model"},
 		{"unknown name 400", 400, hdr("NovelException"), []byte(`{"message":"leak ` + secretAcct + `"}`), "invalid_request", "Bedrock rejected the request"},
 		{"unknown name 401", 401, hdr("NovelException"), nil, "invalid_api_key", "upstream rejected the Bedrock API key"},
 		{"unknown name 403", 403, hdr(""), nil, "permission_denied", "Bedrock API key is not authorized for this model"},
@@ -520,7 +524,7 @@ func TestBedrockAdapter_MapUpstreamErrorMatrix(t *testing.T) {
 			if tc.wantMsg != "" && msg != tc.wantMsg {
 				t.Errorf("message = %q, want %q", msg, tc.wantMsg)
 			}
-			for _, leak := range []string{"123456789012", "alice", "slow down", "warming", "max_tokens", "nope", "viacode", "capital"} {
+			for _, leak := range []string{"123456789012", "alice", "slow down", "warming", "max_tokens", "nope", "viacode", "capital", "Authentication failed", "Error 002", "this account"} {
 				if strings.Contains(msg, leak) {
 					t.Errorf("message %q leaks %q", msg, leak)
 				}
